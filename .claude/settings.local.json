@@ -1,8 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "PowerShell(Get-ChildItem -Recurse \"C:\\\\Users\\\\Administrator\\\\Documents\\\\Project\\\\Laravel Project\\\\booster-coffee\\\\public\" -ErrorAction SilentlyContinue | Where-Object { -not $_.PSIsContainer } | Select-Object -ExpandProperty FullName)",
-      "PowerShell($content = Get-Content \"C:\\\\Users\\\\Administrator\\\\Documents\\\\Project\\\\Laravel Project\\\\booster-coffee\\\\public\\\\build\\\\assets\\\\app-34mOoJaZ.js\" -Raw -Encoding UTF8; $idx = $content.IndexOf\\('ui-sidebar'\\); Write-Host \"ui-sidebar at: $idx\"; if \\($idx -ge 0\\) { $content.Substring\\($idx, [Math]::Min\\(3000, $content.Length - $idx\\)\\) })"
-    ]
-  }
-}
