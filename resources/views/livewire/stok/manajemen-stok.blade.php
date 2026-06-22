@@ -133,19 +133,36 @@ new class extends Component {
 
     public function tambahResepItem(): void
     {
-        if (!$this->resepIngredientId || !$this->resepJumlah) {
-            return;
-        }
+        // Bug #8 fix: validasi dengan pesan error, bukan silent fail
+        $this->validate([
+            'resepIngredientId' => 'required|integer',
+            'resepJumlah'       => 'required|numeric|min:0.01',
+        ], [
+            'resepIngredientId.required' => 'Pilih bahan baku terlebih dahulu.',
+            'resepJumlah.required'       => 'Jumlah pemakaian harus diisi.',
+            'resepJumlah.min'            => 'Jumlah minimal 0.01.',
+        ]);
 
         $ingredient = Ingredient::findOrFail($this->resepIngredientId);
 
-        Recipe::updateOrCreate(['menu_id' => $this->selectedMenuId, 'ingredient_id' => $this->resepIngredientId], ['jumlah_pakai' => $this->resepJumlah]);
+        // Bug #3 fix: gunakan id dari hasil updateOrCreate agar tombol hapus berfungsi
+        $recipe = Recipe::updateOrCreate(
+            ['menu_id' => $this->selectedMenuId, 'ingredient_id' => $this->resepIngredientId],
+            ['jumlah_pakai' => $this->resepJumlah]
+        );
+
+        // Bug #3 fix: hapus entri lama jika ingredient sudah ada (updateOrCreate bisa update),
+        // lalu tambah/perbarui dengan data terbaru termasuk id
+        $this->resepItems = array_values(
+            array_filter($this->resepItems, fn($item) => $item['ingredient_id'] !== $ingredient->id)
+        );
 
         $this->resepItems[] = [
+            'id'            => $recipe->id,   // ← id wajib ada agar tombol hapus muncul
             'ingredient_id' => $ingredient->id,
-            'nama_bahan' => $ingredient->nama_bahan,
-            'jumlah_pakai' => $this->resepJumlah,
-            'satuan' => $ingredient->satuan,
+            'nama_bahan'    => $ingredient->nama_bahan,
+            'jumlah_pakai'  => $this->resepJumlah,
+            'satuan'        => $ingredient->satuan,
         ];
 
         $this->resepIngredientId = null;

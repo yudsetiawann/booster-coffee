@@ -51,28 +51,47 @@ new class extends Component {
     public function simpan(): void
     {
         $this->validate([
-            'table_id' => 'required|exists:tables,id',
+            'table_id'       => 'required|exists:tables,id',
             'nama_pelanggan' => 'required|string|max:255',
-            'nomor_hp' => 'required|string|max:20',
-            'tanggal' => 'required|date|after_or_equal:today',
-            'jam_mulai' => 'required',
-            'jam_selesai' => 'required|after:jam_mulai',
-            'jumlah_tamu' => 'required|integer|min:1',
-            'dp_amount' => 'nullable|numeric|min:0',
+            'nomor_hp'       => 'required|string|max:20',
+            'tanggal'        => 'required|date|after_or_equal:today',
+            'jam_mulai'      => 'required',
+            'jam_selesai'    => 'required|after:jam_mulai',
+            'jumlah_tamu'    => 'required|integer|min:1',
+            'dp_amount'      => 'nullable|numeric|min:0',
         ]);
 
+        // Bug #10 fix: validasi overlap reservasi pada meja yang sama
+        $overlapQuery = Reservation::where('table_id', $this->table_id)
+            ->where('tanggal', $this->tanggal)
+            ->where('status', '!=', 'dibatalkan')
+            ->where(function ($q) {
+                // Overlap jika: jam_mulai baru < jam_selesai lama DAN jam_selesai baru > jam_mulai lama
+                $q->where('jam_mulai', '<', $this->jam_selesai)
+                  ->where('jam_selesai', '>', $this->jam_mulai);
+            });
+
+        if ($this->editId) {
+            $overlapQuery->where('id', '!=', $this->editId);
+        }
+
+        if ($overlapQuery->exists()) {
+            $this->addError('jam_mulai', 'Meja ini sudah direservasi pada tanggal dan jam yang bersamaan. Pilih waktu atau meja lain.');
+            return;
+        }
+
         $data = [
-            'table_id' => $this->table_id,
+            'table_id'       => $this->table_id,
             'nama_pelanggan' => $this->nama_pelanggan,
-            'nomor_hp' => $this->nomor_hp,
-            'tanggal' => $this->tanggal,
-            'jam_mulai' => $this->jam_mulai,
-            'jam_selesai' => $this->jam_selesai,
-            'jumlah_tamu' => $this->jumlah_tamu,
-            'status' => $this->status,
-            'dp_amount' => $this->dp_amount ?? 0,
-            'dp_status' => $this->dp_status,
-            'dp_metode' => $this->dp_amount > 0 ? $this->dp_metode : null,
+            'nomor_hp'       => $this->nomor_hp,
+            'tanggal'        => $this->tanggal,
+            'jam_mulai'      => $this->jam_mulai,
+            'jam_selesai'    => $this->jam_selesai,
+            'jumlah_tamu'    => $this->jumlah_tamu,
+            'status'         => $this->status,
+            'dp_amount'      => $this->dp_amount ?? 0,
+            'dp_status'      => $this->dp_status,
+            'dp_metode'      => $this->dp_amount > 0 ? $this->dp_metode : null,
         ];
 
         if ($this->editId) {

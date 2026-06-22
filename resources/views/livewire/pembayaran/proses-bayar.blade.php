@@ -1,24 +1,27 @@
-<?php
-
 use Livewire\Volt\Component;
 use App\Models\Table;
 use App\Models\Order;
 use App\Models\Payment;
+use App\Models\Promo;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 new class extends Component {
-    public ?int $selectedMejaId = null;
+    public ?int $selectedMejaId  = null;
     public ?int $selectedOrderId = null;
-    public string $metode = 'tunai';
+    public string $metode        = 'tunai';
     public int|string $jumlahBayar = '';
-    public bool $isSplit = false;
-    public string $namaPembayar = '';
-    public bool $showBerhasil = false;
+    public bool $isSplit         = false;
+    public string $namaPembayar  = '';
+    public bool $showBerhasil    = false;
     public array $splitPembayaran = [];
     public int|string $splitJumlah = '';
-    public string $splitNama = '';
-    public string $splitMetode = 'tunai';
+    public string $splitNama     = '';
+    public string $splitMetode   = 'tunai';
+
+    // Inkonsistensi #3 fix: Promo terintegrasi ke pembayaran
+    public ?int $promoId      = null;
+    public int $promoDiskon   = 0;   // nilai diskon yang sudah dihitung (Rp)
 
     public function pilihMeja(int $id): void
     {
@@ -46,7 +49,40 @@ new class extends Component {
         if (!$this->order) {
             return 0;
         }
-        return $this->order->items->sum(fn($item) => $item->harga_saat_pesan * $item->qty);
+        $subtotal = (int) $this->order->items->sum(fn($item) => $item->harga_saat_pesan * $item->qty);
+        // Inkonsistensi #3 fix: kurangi diskon promo dari subtotal
+        return max(0, $subtotal - $this->promoDiskon);
+    }
+
+    // Inkonsistensi #3 fix: Hitung diskon saat promo dipilih
+    public function updatedPromoId(): void
+    {
+        $this->hitungPromo();
+    }
+
+    public function hitungPromo(): void
+    {
+        if (!$this->promoId || !$this->order) {
+            $this->promoDiskon = 0;
+            return;
+        }
+
+        $promo = Promo::find($this->promoId);
+
+        if (!$promo || !$promo->aktif) {
+            $this->promoDiskon = 0;
+            return;
+        }
+
+        $subtotal = (int) $this->order->items->sum(fn($item) => $item->harga_saat_pesan * $item->qty);
+
+        $this->promoDiskon = match ($promo->tipe) {
+            'persen'  => (int) round($subtotal * ($promo->nilai / 100)),
+            'nominal' => min((int) $promo->nilai, $subtotal),  // diskon tidak boleh melebihi subtotal
+            'member'  => min((int) $promo->nilai, $subtotal),
+            'bogo'    => 0,  // BOGO dihitung manual oleh kasir
+            default   => 0,
+        };
     }
 
     public function getTotalTerbayarProperty(): int
@@ -101,35 +137,65 @@ new class extends Component {
         }
 
         if ($this->isSplit) {
-            foreach ($this->splitPembayaran as $split) {
-                Payment::create([
-                    'order_id' => $this->selectedOrderId,
-                    'jumlah_bayar' => $split['jumlah'],
-                    'metode' => $split['metode'],
-                    'is_split' => true,
-                    'nama_pembayar' => $split['nama'],
-                ]);
+            // Bug #4 fix: validasi split tidak boleh kosong
+            if (empty($this->splitPembayaran)) {
+                $this->addError('split', 'Tambahkan minimal satu pembayaran ke dalam daftar split.');
+                return;
             }
+
+            // Bug #4 fix: validasi total split harus >= total tagihan
+            $totalSplit = collect($this->splitPembayaran)->sum('jumlah');
+            if ($totalSplit < $this->total) {
+                $this->addError('split', 'Total split (Rp ' . number_format($totalSplit, 0, ',', '.') . ') belum mencukupi tagihan (Rp ' . number_format($this->total, 0, ',', '.') . ').');
+                return;
+            }
+
+            DB::transaction(function () use ($order) {
+                foreach ($this->splitPembayaran as $split) {
+                    Payment::create([
+                        'order_id'      => $this->selectedOrderId,
+                        'jumlah_bayar'  => $split['jumlah'],
+                        'metode'        => $split['metode'],
+                        'is_split'      => true,
+                        'nama_pembayar' => $split['nama'],
+                    ]);
+                }
+                $order->update(['status' => 'pending']);
+                $order->items()->update(['status' => 'pending']);
+                $order->table()->update(['status' => 'terisi']);
+
+                Log::info('Pembayaran split berhasil', [
+                    'order_id'    => $order->id,
+                    'total_split' => collect($this->splitPembayaran)->sum('jumlah'),
+                    'kasir_id'    => auth()->id(),
+                ]);
+            });
         } else {
             $this->validate([
                 'jumlahBayar' => 'required|numeric|min:1',
-                'metode' => 'required|in:tunai,transfer,qris',
+                'metode'      => 'required|in:tunai,transfer,qris',
             ]);
 
-            Payment::create([
-                'order_id' => $this->selectedOrderId,
-                'jumlah_bayar' => (int) $this->jumlahBayar,
-                'metode' => $this->metode,
-                'is_split' => false,
-                'nama_pembayar' => $this->namaPembayar,
-            ]);
+            DB::transaction(function () use ($order) {
+                Payment::create([
+                    'order_id'      => $this->selectedOrderId,
+                    'jumlah_bayar'  => (int) $this->jumlahBayar,
+                    'metode'        => $this->metode,
+                    'is_split'      => false,
+                    'nama_pembayar' => $this->namaPembayar,
+                ]);
+                $order->update(['status' => 'pending']);
+                $order->items()->update(['status' => 'pending']);
+                $order->table()->update(['status' => 'terisi']);
+
+                Log::info('Pembayaran tunggal berhasil', [
+                    'order_id'     => $order->id,
+                    'jumlah_bayar' => (int) $this->jumlahBayar,
+                    'metode'       => $this->metode,
+                    'kasir_id'     => auth()->id(),
+                ]);
+            });
         }
-
-        // Setelah bayar: order & semua item → pending (siap diambil dapur)
-        // Status meja → terisi (dapur sedang memproses)
-        $order->update(['status' => 'pending']);
-        $order->items()->update(['status' => 'pending']);
-        $order->table()->update(['status' => 'terisi']);
 
         $this->resetForm();
         $this->selectedOrderId = null;
@@ -138,15 +204,18 @@ new class extends Component {
 
     public function resetForm(): void
     {
-        $this->metode = 'tunai';
-        $this->jumlahBayar = '';
-        $this->namaPembayar = '';
-        $this->isSplit = false;
+        $this->metode        = 'tunai';
+        $this->jumlahBayar   = '';
+        $this->namaPembayar  = '';
+        $this->isSplit       = false;
         $this->splitPembayaran = [];
-        $this->splitNama = '';
-        $this->splitJumlah = '';
-        $this->splitMetode = 'tunai';
-        $this->showBerhasil = false;
+        $this->splitNama     = '';
+        $this->splitJumlah   = '';
+        $this->splitMetode   = 'tunai';
+        $this->showBerhasil  = false;
+        // Reset promo state
+        $this->promoId       = null;
+        $this->promoDiskon   = 0;
     }
 
     public function with(): array
@@ -162,7 +231,13 @@ new class extends Component {
                 ->get();
         }
 
-        return compact('mejas', 'orders');
+        // Inkonsistensi #3 fix: load promo aktif yang masih dalam periode berlaku
+        $promos = Promo::where('aktif', true)
+            ->where('berlaku_mulai', '<=', now()->toDateString())
+            ->where('berlaku_sampai', '>=', now()->toDateString())
+            ->get();
+
+        return compact('mejas', 'orders', 'promos');
     }
 }; ?>
 
@@ -213,14 +288,18 @@ new class extends Component {
                             </p>
                             <div class="flex gap-2">
                                 @foreach ($mejasZona as $meja)
+                                    {{-- UX #2 fix: disable meja yg tidak mungkin punya order aktif (tersedia/perlu_dibersihkan) --}}
+                                    @php $mejaAktif = in_array($meja->status, ['terisi', 'pesanan_masuk']); @endphp
                                     <button type="button" wire:key="btn-meja-bayar-{{ $meja->id }}"
                                         wire:click="pilihMeja({{ $meja->id }})"
+                                        @disabled(!$mejaAktif)
+                                        title="{{ !$mejaAktif ? 'Tidak ada order aktif di meja ini' : '' }}"
                                         class="min-w-[64px] rounded-xl border px-3 py-2.5 text-sm font-bold transition-all duration-200
                                         {{ $selectedMejaId === $meja->id
                                             ? 'bg-amber-600 border-amber-600 text-white shadow-md'
-                                            : (in_array($meja->status, ['terisi', 'pesanan_masuk'])
+                                            : ($mejaAktif
                                                 ? 'bg-amber-50 border-amber-200 text-amber-700 hover:bg-amber-100 dark:bg-amber-950/30 dark:border-amber-900/50 dark:text-amber-400'
-                                                : 'bg-stone-50 border-stone-200 text-stone-400 opacity-60 dark:bg-stone-900 dark:border-stone-800') }}">
+                                                : 'bg-stone-50 border-stone-200 text-stone-300 opacity-40 cursor-not-allowed dark:bg-stone-900 dark:border-stone-800') }}">
                                         {{ $meja->nama_meja }}
                                     </button>
                                 @endforeach
@@ -329,6 +408,39 @@ new class extends Component {
 
                             <div class="border-t-2 border-dashed border-stone-200 pt-3 dark:border-stone-700">
                                 <div class="flex justify-between items-center mb-1">
+                                    <span class="text-sm font-bold text-stone-500">Subtotal</span>
+                                    <span class="text-sm font-semibold text-stone-700 dark:text-stone-300">Rp
+                                        {{ number_format($this->order->items->sum(fn($i) => $i->harga_saat_pesan * $i->qty), 0, ',', '.') }}</span>
+                                </div>
+
+                                {{-- Inkonsistensi #3 fix: Promo Selector --}}
+                                @if ($promos->isNotEmpty())
+                                <div class="mb-3">
+                                    <label class="mb-1.5 block text-xs font-bold uppercase tracking-wide text-stone-500">Terapkan Promo</label>
+                                    <select wire:model.live="promoId"
+                                        class="w-full rounded-xl border border-stone-200 px-4 py-2.5 text-sm focus:border-amber-600 focus:ring-1 focus:ring-amber-600 dark:border-stone-700 dark:bg-stone-800 dark:text-white">
+                                        <option value="">— Tanpa Promo —</option>
+                                        @foreach ($promos as $promo)
+                                            <option value="{{ $promo->id }}">
+                                                {{ $promo->nama_promo }}
+                                                @if ($promo->tipe === 'persen') ({{ $promo->nilai }}% OFF)
+                                                @elseif (in_array($promo->tipe, ['nominal', 'member'])) (- Rp {{ number_format($promo->nilai, 0, ',', '.') }})
+                                                @else (Buy 1 Get 1)
+                                                @endif
+                                            </option>
+                                        @endforeach
+                                    </select>
+                                </div>
+                                @endif
+
+                                @if ($promoDiskon > 0)
+                                <div class="flex justify-between items-center mb-1 text-green-600 dark:text-green-400">
+                                    <span class="text-sm font-bold">Diskon Promo</span>
+                                    <span class="text-sm font-black">- Rp {{ number_format($promoDiskon, 0, ',', '.') }}</span>
+                                </div>
+                                @endif
+
+                                <div class="flex justify-between items-center mb-1 @if($promoDiskon > 0) border-t border-stone-200 pt-2 dark:border-stone-700 @endif">
                                     <span class="text-sm font-bold text-stone-500">Total Tagihan</span>
                                     <span class="text-lg font-black text-amber-600">Rp
                                         {{ number_format($this->total, 0, ',', '.') }}</span>
@@ -392,14 +504,15 @@ new class extends Component {
                                         <span class="text-xs font-bold text-red-500">{{ $message }}</span>
                                     @enderror
 
-                                    @if ($jumlahBayar && $jumlahBayar > $this->total)
+                                    {{-- Bug #9 fix: kembalian dihitung dari $sisa (tagihan tersisa), bukan dari $total --}}
+                                    @if ($jumlahBayar && $jumlahBayar > $this->sisa)
                                         <div
                                             class="rounded-xl bg-emerald-50 p-3 border border-emerald-100 text-center dark:bg-emerald-950/30 dark:border-emerald-900/50">
                                             <p
                                                 class="text-xs font-bold uppercase tracking-widest text-emerald-600 dark:text-emerald-400 mb-1">
                                                 Kembalian</p>
                                             <p class="text-2xl font-black text-emerald-700 dark:text-emerald-300">Rp
-                                                {{ number_format($jumlahBayar - $this->total, 0, ',', '.') }}</p>
+                                                {{ number_format($jumlahBayar - $this->sisa, 0, ',', '.') }}</p>
                                         </div>
                                     @endif
                                 </div>

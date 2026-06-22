@@ -18,25 +18,39 @@ new class extends Component {
     {
         $this->validate([
             'nama_pelanggan' => 'required|string|max:255',
-            'nomor_hp' => 'required|string|max:20',
-            'table_id' => 'required|exists:tables,id',
-            'tanggal' => 'required|date|after_or_equal:today',
-            'jam_mulai' => 'required',
-            'jam_selesai' => 'required|after:jam_mulai',
-            'jumlah_tamu' => 'required|integer|min:1',
+            'nomor_hp'       => 'required|string|max:20',
+            'table_id'       => 'required|exists:tables,id',
+            'tanggal'        => 'required|date|after_or_equal:today',
+            'jam_mulai'      => 'required',
+            'jam_selesai'    => 'required|after:jam_mulai',
+            'jumlah_tamu'    => 'required|integer|min:1',
         ]);
+
+        // UX #4 fix: Cek overlap reservasi agar pelanggan tidak bisa booking meja yang sudah direservasi
+        $overlap = Reservation::where('table_id', $this->table_id)
+            ->where('tanggal', $this->tanggal)
+            ->where('status', '!=', 'dibatalkan')
+            ->where(function ($q) {
+                $q->where('jam_mulai', '<', $this->jam_selesai)
+                  ->where('jam_selesai', '>', $this->jam_mulai);
+            })->exists();
+
+        if ($overlap) {
+            $this->addError('table_id', 'Meja ini sudah direservasi pada tanggal dan jam yang kamu pilih. Coba pilih meja atau waktu lain.');
+            return;
+        }
 
         Reservation::create([
             'nama_pelanggan' => $this->nama_pelanggan,
-            'nomor_hp' => $this->nomor_hp,
-            'table_id' => $this->table_id,
-            'tanggal' => $this->tanggal,
-            'jam_mulai' => $this->jam_mulai,
-            'jam_selesai' => $this->jam_selesai,
-            'jumlah_tamu' => $this->jumlah_tamu,
-            'status' => 'pending',
-            'dp_amount' => 0,
-            'dp_status' => 'belum_bayar',
+            'nomor_hp'       => $this->nomor_hp,
+            'table_id'       => $this->table_id,
+            'tanggal'        => $this->tanggal,
+            'jam_mulai'      => $this->jam_mulai,
+            'jam_selesai'    => $this->jam_selesai,
+            'jumlah_tamu'    => $this->jumlah_tamu,
+            'status'         => 'pending',
+            'dp_amount'      => 0,
+            'dp_status'      => 'belum_bayar',
         ]);
 
         $this->reset(['nama_pelanggan', 'nomor_hp', 'table_id', 'tanggal', 'jam_mulai', 'jam_selesai', 'jumlah_tamu']);

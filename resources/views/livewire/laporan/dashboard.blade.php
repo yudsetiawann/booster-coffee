@@ -55,17 +55,59 @@ new class extends Component {
             ->get();
 
         // Grafik per jam — menggunakan PHP groupBy agar kompatibel dengan SQLite & MySQL
-        $grafikHarian = Payment::whereBetween('created_at', [now()->startOfDay(), now()->endOfDay()])
-            ->get(['created_at', 'jumlah_bayar'])
-            ->groupBy(fn($p) => (int) $p->created_at->format('G')) // 0-23, no leading zero
-            ->map(fn($group) => $group->sum('jumlah_bayar'));
+        // Bug #7 fix: gunakan [$start, $end] dari dateRange, bukan hardcoded now()->startOfDay()
+        $grafikLabel = match ($this->filter) {
+            'minggu' => 'Minggu Ini (per Hari)',
+            'bulan'  => 'Bulan Ini (per Hari)',
+            default  => 'Hari Ini (per Jam)',
+        };
 
-        $grafikData = collect(range(0, 23))->map(
-            fn($jam) => [
-                'jam' => str_pad($jam, 2, '0', STR_PAD_LEFT) . ':00',
-                'total' => $grafikHarian->get($jam, 0),
-            ],
-        );
+        if ($this->filter === 'hari') {
+            // Grafik per jam untuk hari ini
+            $grafikHarian = Payment::whereBetween('created_at', [$start, $end])
+                ->get(['created_at', 'jumlah_bayar'])
+                ->groupBy(fn($p) => (int) $p->created_at->format('G'))
+                ->map(fn($group) => $group->sum('jumlah_bayar'));
+
+            $grafikData = collect(range(0, 23))->map(
+                fn($jam) => [
+                    'jam'   => str_pad($jam, 2, '0', STR_PAD_LEFT) . ':00',
+                    'total' => $grafikHarian->get($jam, 0),
+                ],
+            );
+        } elseif ($this->filter === 'minggu') {
+            // Grafik per hari untuk minggu ini
+            $grafikHarian = Payment::whereBetween('created_at', [$start, $end])
+                ->get(['created_at', 'jumlah_bayar'])
+                ->groupBy(fn($p) => $p->created_at->format('Y-m-d'))
+                ->map(fn($group) => $group->sum('jumlah_bayar'));
+
+            $grafikData = collect();
+            $cur = $start->copy()->startOfDay();
+            while ($cur->lte($end)) {
+                $grafikData->push([
+                    'jam'   => $cur->translatedFormat('D, d M'),
+                    'total' => $grafikHarian->get($cur->format('Y-m-d'), 0),
+                ]);
+                $cur->addDay();
+            }
+        } else {
+            // Grafik per hari untuk bulan ini
+            $grafikHarian = Payment::whereBetween('created_at', [$start, $end])
+                ->get(['created_at', 'jumlah_bayar'])
+                ->groupBy(fn($p) => $p->created_at->format('Y-m-d'))
+                ->map(fn($group) => $group->sum('jumlah_bayar'));
+
+            $grafikData = collect();
+            $cur = $start->copy()->startOfDay();
+            while ($cur->lte($end)) {
+                $grafikData->push([
+                    'jam'   => $cur->format('d M'),
+                    'total' => $grafikHarian->get($cur->format('Y-m-d'), 0),
+                ]);
+                $cur->addDay();
+            }
+        }
 
         // Order terbaru
         $orderTerbaru = Order::with(['table', 'items'])
@@ -77,7 +119,7 @@ new class extends Component {
         // Stok menipis — dipindah ke sini dari @php di template agar tidak jadi query liar
         $stokMenipis = Ingredient::whereColumn('stok_saat_ini', '<=', 'stok_minimum')->get();
 
-        return compact('totalPendapatan', 'totalTransaksi', 'menuTerlaris', 'pendapatanKasir', 'grafikData', 'orderTerbaru', 'stokMenipis');
+        return compact('totalPendapatan', 'totalTransaksi', 'menuTerlaris', 'pendapatanKasir', 'grafikData', 'grafikLabel', 'orderTerbaru', 'stokMenipis');
     }
 }; ?>
 
@@ -150,7 +192,7 @@ new class extends Component {
 
         {{-- Grafik Penjualan Harian --}}
         <div class="xl:col-span-2 rounded-xl border border-amber-200 bg-white p-5 shadow-sm">
-            <h2 class="mb-4 text-sm font-bold text-primary-dark">Grafik Penjualan Hari Ini (per Jam)</h2>
+            <h2 class="mb-4 text-sm font-bold text-primary-dark">Grafik Penjualan — {{ $grafikLabel }}</h2>
             <div class="relative h-48">
                 <canvas id="grafikPenjualan"></canvas>
             </div>

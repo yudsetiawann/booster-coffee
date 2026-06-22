@@ -9,6 +9,9 @@ use Illuminate\Support\Facades\Log;
 
 new class extends Component {
     #[Poll(2000)]
+    public bool $showKonfirmasiTutup = false;
+    public ?int $konfirmasiOrderId = null;
+
     public function with(): array
     {
         $orders = Order::with(['table', 'items.menu'])
@@ -67,7 +70,7 @@ new class extends Component {
     {
         DB::transaction(function () use ($orderId) {
             $order = Order::with('items')->findOrFail($orderId);
-            $allSelesai = $order->items->every(fn($item) => $item->status === 'selesai');
+            $allSelesai  = $order->items->every(fn($item) => $item->status === 'selesai');
             $anyDiproses = $order->items->contains(fn($item) => $item->status === 'diproses');
 
             if ($allSelesai) {
@@ -76,6 +79,10 @@ new class extends Component {
             } elseif ($anyDiproses) {
                 $order->update(['status' => 'diproses']);
                 $order->table()->update(['status' => 'terisi']);
+            } else {
+                // Bug #6 fix: semua item masih 'pending' → order tetap di status 'pending'
+                // Tidak ada perubahan status order, pastikan meja konsisten
+                $order->update(['status' => 'pending']);
             }
         });
     }
@@ -210,18 +217,37 @@ new class extends Component {
                         @endif
                     </div>
 
-                    {{-- Footer Tiket: Tombol Raksasa Selesai Semua --}}
-                    <div class="p-3 bg-zinc-900">
-                        <button wire:click="selesaikanOrder({{ $order->id }})" wire:loading.attr="disabled"
-                            class="flex w-full items-center justify-center gap-2 rounded-xl border-2 border-emerald-500/20 bg-emerald-500/10 px-4 py-3.5 text-base font-black text-emerald-500 hover:bg-emerald-500 hover:text-emerald-950 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 focus:ring-offset-zinc-900 active:scale-[0.98] transition-all disabled:opacity-50">
+                    {{-- Footer Tiket: Tombol Tutup Tiket dengan Konfirmasi Alpine.js (UX #3 fix) --}}
+                    <div class="p-3 bg-zinc-900"
+                        x-data="{ konfirmasi: false }">
+                        @if (!$konfirmasi ?? true)
+                        <button
+                            x-show="!konfirmasi"
+                            x-on:click="konfirmasi = true"
+                            class="flex w-full items-center justify-center gap-2 rounded-xl border-2 border-emerald-500/20 bg-emerald-500/10 px-4 py-3.5 text-base font-black text-emerald-500 hover:bg-emerald-500 hover:text-emerald-950 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 focus:ring-offset-zinc-900 active:scale-[0.98] transition-all">
                             <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
-                                    d="M5 13l4 4L19 7" />
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7" />
                             </svg>
-                            <span wire:loading.remove wire:target="selesaikanOrder({{ $order->id }})">TUTUP
-                                TIKET</span>
-                            <span wire:loading wire:target="selesaikanOrder({{ $order->id }})">MEMPROSES...</span>
+                            TUTUP TIKET
                         </button>
+
+                        {{-- Konfirmasi setelah klik pertama --}}
+                        <div x-show="konfirmasi" x-cloak class="space-y-2">
+                            <p class="text-center text-xs font-bold text-yellow-400 mb-2">⚠️ Yakin tutup semua item tiket ini?</p>
+                            <div class="flex gap-2">
+                                <button
+                                    x-on:click="konfirmasi = false"
+                                    class="flex-1 rounded-xl border border-zinc-700 bg-zinc-800 py-2.5 text-sm font-bold text-zinc-400 hover:bg-zinc-700 transition-all">
+                                    Batal
+                                </button>
+                                <button wire:click="selesaikanOrder({{ $order->id }})" wire:loading.attr="disabled"
+                                    class="flex-1 rounded-xl bg-emerald-500 py-2.5 text-sm font-black text-emerald-950 hover:bg-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 transition-all disabled:opacity-50">
+                                    <span wire:loading.remove wire:target="selesaikanOrder({{ $order->id }})">✓ Konfirmasi</span>
+                                    <span wire:loading wire:target="selesaikanOrder({{ $order->id }})">Memproses...</span>
+                                </button>
+                            </div>
+                        </div>
+                        @endif
                     </div>
                 </div>
             @endforeach
